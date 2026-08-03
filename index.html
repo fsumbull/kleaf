@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>kleaf — dünyanın karbon nabzı</title>
+  <meta name="description" content="kleaf · belediyeler, kamu kurumları ve sanayi için on-premise dijital karbon yönetim platformu. Dünyayı döndür, yakınlaş — ülkelerin gerçek CO₂ emisyonlarını keşfet. KarbonKent · KarbonKamu · KarbonSanayi" />
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+
+  <!-- 3D sahne -->
+  <canvas id="scene" aria-label="kleaf — interaktif dünya: ülkelerin karbon emisyonları"></canvas>
+
+  <!-- ülke emisyon etiketleri (JS konumlar) -->
+  <div class="tags" id="tags" aria-hidden="true"></div>
+
+  <!-- marka: sol üst -->
+  <header class="brand" aria-label="kleaf">
+    <svg width="30" height="30" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id="lg" x1="30" y1="90" x2="90" y2="30" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stop-color="#16A34A"/><stop offset="1" stop-color="#4ADE80"/>
+        </linearGradient>
+      </defs>
+      <path d="M60 8 L103 33 V85 L60 110 L17 85 V33 Z" stroke="#0C4A33" stroke-width="7" stroke-linejoin="round" fill="rgba(255,255,255,.75)"/>
+      <path d="M40 82 C40 52 55 38 84 38 C84 68 69 82 40 82 Z" fill="url(#lg)"/>
+      <path d="M45 77 C55 62 64 53 78 44" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" fill="none"/>
+    </svg>
+    <span>kleaf<i>.</i></span>
+  </header>
+
+  <!-- tek satır: marka sözü -->
+  <p class="tagline" id="tagline">reduce carbon · grow nature</p>
+
+  <!-- etkileşim ipucu: ilk dokunuşta kaybolur -->
+  <p class="hint" id="hint">sürükle, döndür · tekerlekle yakınlaş — ülkeler belirsin</p>
+
+  <!-- iletişim tetikleyici: sağ alt -->
+  <button class="contact-btn" id="contactBtn" aria-haspopup="dialog">get in touch <i>→</i></button>
+
+  <!-- iletişim: buzlu cam altıgen panel -->
+  <div class="contact-veil" id="contactVeil" aria-hidden="true"></div>
+  <aside class="contact-panel" id="contactPanel" role="dialog" aria-modal="true" aria-label="Contact" aria-hidden="true">
+    <svg class="contact-hex-decor" viewBox="0 0 120 120" preserveAspectRatio="none" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M8.4 60 L33 3.6 H87 L111.6 60 L87 116.4 H33 Z" stroke="#16A34A" stroke-width="1.6" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+    </svg>
+    <button class="contact-close" id="contactClose" aria-label="Close">✕</button>
+    <h2 class="contact-title" data-stagger>get in touch</h2>
+
+    <div class="contact-rows">
+      <button class="contact-row" data-copy="merhaba@kleaf.co">
+        <span class="c-label">e-mail</span>
+        <span class="c-value" data-stagger>merhaba@kleaf.co</span>
+        <span class="c-hint">copy</span>
+      </button>
+      <button class="contact-row" data-copy="+90 532 000 00 00">
+        <span class="c-label">phone</span>
+        <span class="c-value" data-stagger>+90 532 000 00 00</span>
+        <span class="c-hint">copy</span>
+      </button>
+      <a class="contact-row" href="https://linkedin.com/company/kleaf" target="_blank" rel="noopener">
+        <span class="c-label">linkedin</span>
+        <span class="c-value" data-stagger>/company/kleaf</span>
+        <span class="c-hint">open ↗</span>
+      </a>
+    </div>
+
+    <div class="contact-chips" aria-label="Products">
+      <span>KarbonKent</span><span>KarbonKamu</span><span>KarbonSanayi</span>
+    </div>
+    <p class="contact-trust">on-premise setup — your data stays within your organization</p>
+  </aside>
+
+  <!-- preloader -->
+  <div class="preloader" id="preloader" aria-hidden="true">
+    <div class="preloader-inner">
+      <svg class="preloader-logo" width="84" height="84" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path class="pl-hex" d="M60 8 L103 33 V85 L60 110 L17 85 V33 Z" stroke="#0C4A33" stroke-width="7" stroke-linejoin="round" fill="none"/>
+        <path class="pl-leaf" d="M40 82 C40 52 55 38 84 38 C84 68 69 82 40 82 Z" fill="#16A34A"/>
+        <path class="pl-vein" d="M45 77 C55 62 64 53 78 44" stroke="#FFFFFF" stroke-width="4" stroke-linecap="round" fill="none"/>
+      </svg>
+      <div class="preloader-count" id="preloaderCount">0%</div>
+    </div>
+  </div>
+
+  <script>
+    /* file:// ile açılırsa modül yüklenemez — zarif ipucu göster */
+    setTimeout(function () {
+      if (!window.__KLEAF_BOOTED) {
+        var c = document.getElementById("preloaderCount");
+        if (c) c.outerHTML =
+          '<div class="boot-hint">deneyim yerel sunucu ister<br/><code>python3 -m http.server</code> &nbsp;→&nbsp; <code>localhost:8000</code></div>';
+      }
+    }, 3500);
+  </script>
+  <script type="module" src="main.js"></script>
+</body>
+</html>

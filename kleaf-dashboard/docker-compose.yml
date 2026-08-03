@@ -1,0 +1,44 @@
+# kleaf panel — on-premise dağıtım
+# Kullanım: AUTH_SECRET ve POSTGRES_PASSWORD değerlerini değiştirin, sonra:
+#   docker compose up -d --build
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kleaf
+      POSTGRES_USER: kleaf
+      POSTGRES_PASSWORD: "degistir-beni-guclu-parola"
+    volumes:
+      - kleaf-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kleaf -d kleaf"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://kleaf:degistir-beni-guclu-parola@db:5432/kleaf?schema=public"
+      # ÜRETİMDE MUTLAKA DEĞİŞTİRİN — ör: openssl rand -base64 48
+      AUTH_SECRET: "degistir-beni-en-az-32-karakter-gizli-anahtar"
+      # İlk kurulumda demo kurum/kullanıcılarla başlamak için 1 yapın
+      SEED_DEMO: "0"
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/saglik || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  kleaf-db:

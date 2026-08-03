@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-sg), ui-sans-serif, system-ui, sans-serif;
+
+  /* kleaf paleti */
+  --color-ink: #0c4a33;          /* koyu yeşil metin */
+  --color-leaf-50: #f0fdf5;
+  --color-leaf-100: #dcfce8;
+  --color-leaf-200: #bbf7d1;
+  --color-leaf-300: #86efac;
+  --color-leaf-400: #4ade80;
+  --color-leaf-500: #22c55e;
+  --color-leaf-600: #16a34a;
+  --color-leaf-700: #15803c;
+  --color-leaf-800: #166533;
+  --color-mist: #ecfdf5;
+  --color-paper: #fdfefd;
+  --color-warm: #d97706;         /* uyarı amberi */
+  --color-danger: #dc2626;
+}
+
+:root {
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html { color-scheme: light; }
+
+body {
+  background:
+    radial-gradient(1200px 700px at 85% -10%, #dcfce866 0%, transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, #d1fae54d 0%, transparent 55%),
+    linear-gradient(160deg, var(--color-paper) 0%, var(--color-mist) 100%);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: #bbf7d1; color: #0c4a33; }
+
+/* ── buzlu cam kart ── */
+.glass {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  border: 1px solid rgba(22, 163, 74, 0.12);
+  box-shadow: 0 1px 2px rgba(12, 74, 51, 0.04), 0 12px 32px -18px rgba(12, 74, 51, 0.18);
+  border-radius: 1.25rem;
+}
+.glass-strong {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  border: 1px solid rgba(22, 163, 74, 0.16);
+  box-shadow: 0 2px 4px rgba(12, 74, 51, 0.05), 0 24px 56px -24px rgba(12, 74, 51, 0.28);
+  border-radius: 1.5rem;
+}
+
+/* ── küçük harf başlık dili ── */
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: lowercase;
+  color: #16a34a;
+  font-weight: 500;
+}
+
+/* ── iskelet yükleyici ── */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: #e8f5ec;
+  border-radius: 0.75rem;
+}
+.skeleton::after {
+  content: "";
+  position: absolute; inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  animation: shimmer 1.6s infinite;
+}
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+
+/* ── ince kaydırma çubuğu ── */
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: #bbf7d1; border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: #86efac; background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ── giriş animasyonları ── */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+.rise { animation: rise 0.7s var(--ease) both; }
+.rise-1 { animation-delay: 0.06s; } .rise-2 { animation-delay: 0.12s; }
+.rise-3 { animation-delay: 0.18s; } .rise-4 { animation-delay: 0.24s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .skeleton::after { animation: none; }
+}
