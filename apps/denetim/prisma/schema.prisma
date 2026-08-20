@@ -1,0 +1,652 @@
+// kleaf — dijital karbon yönetim platformu veri modeli
+// Not: SQLite uyumluluğu için enum yerine String + uygulama katmanında zod doğrulaması
+// kullanılır (Prisma enum'ları SQLite'ta desteklenmez). Geçerli değerler: src/lib/constants.ts
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // On-premise üretimde "postgresql" olarak değiştirin (bkz. Dockerfile / README)
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Kurum: belediye, kamu kurumu veya sanayi işletmesi
+model Organization {
+  id           String   @id @default(cuid())
+  name         String
+  type         String // BELEDIYE | KAMU | SANAYI
+  baselineYear Int // sera gazı envanteri baz yılı
+  netZeroYear  Int      @default(2053)
+  createdAt    DateTime @default(now())
+
+  // birim fiyatlar (₺) — senaryo/fizibilite maliyet hesapları için
+  elektrikTRYPerKwh       Float @default(4.2)
+  dogalgazTRYPerM3        Float @default(17)
+  dizelTRYPerL            Float @default(52)
+  atikBertarafTRYPerTon   Float @default(850)
+  enerjiTasarrufHedefiPct Float @default(15) // kamu binası enerji tasarruf hedefi (%)
+
+  // GES fizibilite parametreleri — bölgesel güneşlenme ve güncel yatırım maliyeti
+  gesKwhPerKwp     Float @default(1350) // yıllık özgül üretim (kWh/kWp)
+  gesCapexTRYPerKwp Float @default(28000) // kurulum maliyeti (₺/kWp)
+
+  portalAcik Boolean @default(false) // kamuya açık şeffaflık portalı (/portal)
+
+  users          User[]
+  units          Unit[]
+  facilities     Facility[]
+  factors        EmissionFactor[]
+  actionPlans    ActionPlan[]
+  scenarios      Scenario[]
+  targets        Target[]
+  vehicles       Vehicle[]
+  neighborhoods  Neighborhood[]
+  cityActivities CityActivity[]
+  periods        Period[]
+  dataTasks      DataTask[]
+  documents      Document[]
+  apiKeys        ApiKey[]
+  inventoryItems InventoryItem[]
+  inventoryEntries InventoryEntry[]
+  bankPools        CreditPool[]        @relation("BankPools")
+  bankTransactions CreditTransaction[] @relation("BankTx")
+  buyerTransactions CreditTransaction[] @relation("BuyerTx")
+  creditRetirements CreditRetirement[]
+  // KarbonBank envanteri (yalnız KARBON_BANK kurumları doldurur)
+  bankDevelopers   ProjectDeveloper[]  @relation("BankDevelopers")
+  bankProjects     CreditProject[]     @relation("BankProjects")
+  bankOrders       TradeOrder[]        @relation("BankOrders")
+  bankPrices       PriceCurve[]        @relation("BankPrices")
+  bankClients      ClientAccount[]     @relation("BankClients")
+  clientAccounts   ClientAccount[]     @relation("ClientOf")
+  bankBranches     BranchCandidate[]   @relation("BankBranches")
+  complianceFlags  ComplianceFlag[]    @relation("OrgFlags")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String // src/lib/constants.ts ROLES (SUPER_ADMIN | IKLIM_MERKEZI | MUDURLUK_VERI | ...)
+  active       Boolean  @default(true) // pasif kullanıcı giriş yapamaz
+  orgId        String?
+  org          Organization? @relation(fields: [orgId], references: [id], onDelete: SetNull)
+  unitId       String? // müdürlük kapsamı (MUDURLUK_VERI / MUDURLUK_ONAY için zorunlu)
+  unit         Unit?   @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  createdAt    DateTime @default(now())
+
+  auditLogs AuditLog[]
+  documents Document[]
+}
+
+/// Müdürlük / birim (ör. Fen İşleri Müdürlüğü)
+model Unit {
+  id    String @id @default(cuid())
+  name  String
+  orgId String
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  facilities  Facility[]
+  actionPlans ActionPlan[]
+  users       User[]
+  dataTasks   DataTask[]
+  inventoryItems InventoryItem[]
+}
+
+/// Tesis: bina, kampüs, araç filosu, aydınlatma, arıtma, GES...
+model Facility {
+  id         String  @id @default(cuid())
+  name       String
+  type       String // BINA | KAMPUS | TESIS | ARAC_FILOSU | AYDINLATMA | GES
+  areaM2     Float?
+  staffCount Int?
+  unitId     String?
+  unit       Unit?   @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  // GES tesisleri için teknik/finansal künye
+  installedKwp   Float? // kurulu güç (kWp)
+  commissionYear Int? // devreye alma yılı
+  capexTRY       Float? // yatırım tutarı (₺)
+
+  // CBS — harita gösterimi (WGS84)
+  lat Float?
+  lng Float?
+
+  activityData ActivityData[]
+  vehicles     Vehicle[]
+}
+
+/// Araç: kurum filosundaki tekil taşıt — yakıt kayıtları ActivityData.vehicleId ile bağlanır
+model Vehicle {
+  id         String  @id @default(cuid())
+  orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  facilityId String?
+  facility   Facility? @relation(fields: [facilityId], references: [id], onDelete: SetNull)
+  plateNo    String
+  name       String? // ör. "Çöp kamyonu #3"
+  vehicleType String // BINEK | KAMYONET | KAMYON | OTOBUS | IS_MAKINESI | MOTOSIKLET
+  fuelType   String // DIZEL | BENZIN | LPG | CNG | ELEKTRIK
+  modelYear  Int?
+  active     Boolean @default(true)
+
+  activityData ActivityData[]
+
+  @@unique([orgId, plateNo])
+}
+
+/// Emisyon faktörü — orgId boş ise küresel kütüphane, dolu ise kuruma özel geçersiz kılma
+model EmissionFactor {
+  id            String  @id @default(cuid())
+  category      String // ELEKTRIK | DOGALGAZ | ...
+  unit          String // kWh, m³, L, kg, ton, km, yolcu-km
+  kgCO2ePerUnit Float
+  source        String // TEİAŞ 2023, IPCC 2006, DEFRA 2024...
+  year          Int
+  scope         Int // 1 | 2 | 3
+  orgId         String?
+  org           Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([category, orgId])
+}
+
+/// Faaliyet verisi: bir tesisin (veya tekil aracın) bir dönemdeki tüketim/üretim kaydı
+model ActivityData {
+  id          String   @id @default(cuid())
+  facilityId  String
+  facility    Facility @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  vehicleId   String?
+  vehicle     Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  // benzersizlik anahtarı: vehicleId ?? "" — SQLite/Postgres unique indekste NULL'ları ayrı saydığından
+  vehicleKey  String   @default("")
+  // envanter kalemi bağlantısı (M12) — aynı tesiste aynı kategoriye farklı kalemler yazabilsin diye anahtara girer
+  inventoryItemId String?
+  inventoryItem   InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: SetNull)
+  inventoryKey    String  @default("")
+  year        Int
+  month       Int // 1-12
+  category    String // ELEKTRIK | DOGALGAZ | DIZEL | ... (src/lib/constants.ts)
+  amount      Float
+  unit        String
+  documentRef String? // fatura / sayaç / belge referansı
+  status      String   @default("TASLAK") // TASLAK | MUDURLUK_ONAYLI | ONAYLI
+  anomalyOk   Boolean  @default(false) // anomali incelendi, sapma doğrulandı (beklenen)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  emissionRecord EmissionRecord?
+  documents      Document[]
+
+  @@unique([facilityId, year, month, category, vehicleKey, inventoryKey])
+  @@index([year, month])
+  @@index([vehicleId])
+  @@index([inventoryItemId])
+}
+
+/// Hesap izi: onay anındaki faktör kopyası ile — faktör güncellense bile geçmiş değişmez (ISO 14064 denetlenebilirlik)
+model EmissionRecord {
+  id             String       @id @default(cuid())
+  activityDataId String       @unique
+  activityData   ActivityData @relation(fields: [activityDataId], references: [id], onDelete: Cascade)
+  scope          Int
+  tCO2e          Float // GES mahsubu negatif kaydedilir; aylık Scope 2 toplamı motorda 0'da kırpılır
+  factorSnapshot String // JSON: onay anında kullanılan faktör
+  calcVersion    String
+  createdAt      DateTime     @default(now())
+
+  @@index([scope])
+}
+
+/// İklim eylem planı maddesi
+model ActionPlan {
+  id                   String  @id @default(cuid())
+  orgId                String
+  org                  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  unitId               String? // sorumlu müdürlük/birim
+  unit                 Unit?   @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  title                String
+  description          String?
+  budgetTRY            Float?
+  targetReductionTCO2e Float
+  status               String  @default("PLANLANDI") // PLANLANDI | DEVAM_EDIYOR | TAMAMLANDI
+  owner                String?
+  startYear            Int?
+  startDate            DateTime?
+  endDate              DateTime? // hedef bitiş — geçmişse ve tamamlanmadıysa "gecikmiş"
+  riskNote             String?
+
+  progress ActionProgress[]
+}
+
+model ActionProgress {
+  id             String     @id @default(cuid())
+  actionPlanId   String
+  actionPlan     ActionPlan @relation(fields: [actionPlanId], references: [id], onDelete: Cascade)
+  date           DateTime   @default(now())
+  note           String?
+  achievedTCO2e  Float      @default(0)
+  spentTRY       Float?
+}
+
+/// Azaltım senaryosu — params JSON metni: { gesKwp, filoElektrifikasyonPct, binaVerimlilikPct }
+model Scenario {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name      String
+  params    String
+  createdAt DateTime @default(now())
+}
+
+/// Yıllık emisyon hedefi (tCO2e)
+model Target {
+  id          String @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  year        Int
+  targetTCO2e Float
+
+  @@unique([orgId, year])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  actorEmail String? // kayıt anındaki e-posta — kullanıcı silinse de iz kalır
+  action     String // GIRIS | VERI_OLUSTUR | VERI_ONAY | ...
+  entity    String
+  entityId  String?
+  detail    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+/// Mahalle — kent ölçeği envanter için nüfus tabanlı birim (yalnız BELEDIYE)
+model Neighborhood {
+  id         String @id @default(cuid())
+  orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name       String
+  population Int
+  lat        Float?
+  lng        Float?
+
+  cityActivities CityActivity[]
+
+  @@unique([orgId, name])
+}
+
+/// Kent ölçeği faaliyet verisi — sektör bazlı yıllık toplam (GPC BASIC yaklaşımı)
+model CityActivity {
+  id             String  @id @default(cuid())
+  orgId          String
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  neighborhoodId String?
+  neighborhood   Neighborhood? @relation(fields: [neighborhoodId], references: [id], onDelete: SetNull)
+  year           Int
+  sector         String // KONUT | TICARET | KAMU_BINA | ULASIM | ATIK | ATIKSU | ENERJI
+  category       String // faktör kütüphanesindeki kategori (ELEKTRIK, DOGALGAZ, DIZEL, ATIK...)
+  amount         Float
+  status         String  @default("ONAYLI")
+
+  @@index([orgId, year, sector])
+}
+
+/// Raporlama dönemi — kapanan dönemde veri girişi/değişikliği yapılamaz
+model Period {
+  id     String @id @default(cuid())
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  year   Int
+  month  Int // 1-12
+  status String @default("ACIK") // ACIK | KAPANDI
+  closedAt DateTime?
+
+  @@unique([orgId, year, month])
+}
+
+/// Veri toplama görevi — müdürlüklere dönem/kategori bazlı atama ve son tarih
+model DataTask {
+  id       String  @id @default(cuid())
+  orgId    String
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  unitId   String
+  unit     Unit    @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  year     Int
+  month    Int
+  category String
+  dueDate  DateTime
+  status   String  @default("BEKLIYOR") // BEKLIYOR | TAMAMLANDI
+  createdAt DateTime @default(now())
+
+  @@index([orgId, year, month])
+}
+
+/// Kanıt belgesi — fatura/sayaç fotoğrafı vb.; faaliyet kaydına bağlanabilir
+model Document {
+  id             String  @id @default(cuid())
+  orgId          String
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  activityDataId String?
+  activityData   ActivityData? @relation(fields: [activityDataId], references: [id], onDelete: SetNull)
+  fileName       String
+  storedName     String // uploads/ altındaki güvenli dosya adı
+  mime           String
+  size           Int
+  uploadedById   String?
+  uploadedBy     User?   @relation(fields: [uploadedById], references: [id], onDelete: SetNull)
+  createdAt      DateTime @default(now())
+
+  @@index([activityDataId])
+}
+
+/// Entegrasyon API anahtarı — otomatik ölçüm verisi alımı (/api/v1/olcum)
+model ApiKey {
+  id         String  @id @default(cuid())
+  orgId      String
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name       String
+  prefix     String // gösterim için ilk 8 karakter
+  keyHash    String @unique // sha256(anahtar)
+  active     Boolean @default(true)
+  lastUsedAt DateTime?
+  createdAt  DateTime @default(now())
+}
+
+/// Envanter ana grubu — 15 grup (İBB Excel'inden); kurumdan bağımsız sözlük
+model InventoryGroup {
+  id        String  @id @default(cuid())
+  code      String  @unique // ELEKTRIK | ARAC_YAKIT | ... (prisma/envanter-kalemleri.ts)
+  name      String
+  sortOrder Int     @default(0)
+  active    Boolean @default(true)
+
+  items InventoryItem[]
+}
+
+/// Envanter kalemi — orgId boş: küresel şablon (Kleaf kataloğu); dolu: kurum kopyası.
+/// Silme YOK — active=false ile pasifleştirilir (bağlı veriler korunur).
+model InventoryItem {
+  id                 String  @id @default(cuid())
+  groupId            String
+  group              InventoryGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  orgId              String?
+  org                Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  unitId             String? // kurum kopyasında sorumlu müdürlük
+  unit               Unit?   @relation(fields: [unitId], references: [id], onDelete: SetNull)
+  unitName           String // Excel'deki İBB birimi adı (şablon eşleme ipucu)
+  name               String
+  dataUnit           String // kWh, L, m³, kg gaz, TL...
+  isoCategory        String // CAT1 | CAT2 | CAT3 | CAT4 | CAT1_2 | CAT3_4 | KENT
+  mode               String // HESAPLANABILIR | IZLEME
+  categoryCode       String? // HESAPLANABILIR ise CATEGORY_CODES köprüsü (ELEKTRIK, DIZEL...)
+  customFactorKgCO2e Float? // kuruma özel kalem faktörü — doluysa kütüphane faktörü yerine kullanılır
+  active             Boolean @default(true)
+  sourceItemId       String? // şablondan içe aktarmada köken kalem (idempotent içe aktarım)
+  createdAt          DateTime @default(now())
+
+  activityData ActivityData[]
+  entries      InventoryEntry[]
+
+  @@index([orgId, active])
+  @@index([orgId, sourceItemId])
+}
+
+/// İzleme kalemi kaydı — emisyon hesabına girmeyen (Cat 4 vb.) miktar takibi
+model InventoryEntry {
+  id          String @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  itemId      String
+  item        InventoryItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  year        Int
+  month       Int // 1-12
+  amount      Float
+  note        String?
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@unique([itemId, year, month])
+  @@index([orgId, year])
+}
+
+/// Karbon kredi havuzu — banka kurumunun satışa açık kredi stoku
+/// poolType: SATIS (müşterilere satış) | BANKA_REZERV (bankanın kendi op. ayak izini kapatma rezervi)
+model CreditPool {
+  id             String  @id @default(cuid())
+  bankOrgId      String
+  bankOrg        Organization @relation("BankPools", fields: [bankOrgId], references: [id], onDelete: Cascade)
+  projectId      String?
+  project        CreditProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  projectName    String
+  projectType    String @default("") // AGACLANDIRMA | YENILENEBILIR | ENERJI_VERIMLILIGI | METAN | BIYOKOMUR | MAVI_KARBON | DAC | TEMIZ_OCAK
+  poolType       String @default("SATIS") // SATIS | BANKA_REZERV
+  standard       String // GOLD_STANDARD | VCS | ULUSAL
+  vintageYear    Int // kredinin üretim yılı
+  totalTCO2e     Float
+  availableTCO2e Float // TRANSFER anında düşer ($transaction içinde)
+  reservedTCO2e  Float @default(0) // emir/rezerv için ayrılan
+  bufferPct      Float @default(0) // tampon havuz oranı (reversal sigortası)
+  qualityRating  String? // AAA..D kredi kalite notu
+  priceTRYPerTon Float
+  active         Boolean @default(true)
+  createdAt      DateTime @default(now())
+
+  transactions CreditTransaction[]
+
+  @@index([bankOrgId, active])
+}
+
+/// Karbon kredi işlemi — çift taraflı akış: TALEP(belediye) → BANKA_ONAY(banka) → TRANSFER(belediye) | RED(banka) | IPTAL(belediye)
+/// Denetim (KLEAF) askı katmanı: DENETIM_ASKI (transfer/retirement kilitli), çözüldüğünde eski durumuna döner.
+/// Hiçbir geçiş tek kurumun yetkisiyle iki adım ilerleyemez — kurallar src/lib/kredi.ts'te
+model CreditTransaction {
+  id             String @id @default(cuid())
+  poolId         String
+  pool           CreditPool @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  bankOrgId      String
+  bankOrg        Organization @relation("BankTx", fields: [bankOrgId], references: [id], onDelete: Cascade)
+  buyerOrgId     String
+  buyerOrg       Organization @relation("BuyerTx", fields: [buyerOrgId], references: [id], onDelete: Cascade)
+  amountTCO2e    Float
+  priceTRYPerTon Float // talep anı fiyat kopyası — havuz fiyatı değişse de işlem değişmez
+  status         String @default("TALEP") // TALEP | BANKA_ONAY | TRANSFER | RED | IPTAL | DENETIM_ASKI
+  askiOncesiStatus String? // DENETIM_ASKI iken önceki durum (çözüldüğünde geri döner)
+  requestNote    String?
+  decisionNote   String?
+  requestedById  String? // belediye kullanıcısı
+  approvedById   String? // banka kullanıcısı
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  retirements CreditRetirement[]
+  complianceFlags ComplianceFlag[]
+  auditDecisions  AuditDecision[]
+
+  @@index([buyerOrgId, status])
+  @@index([bankOrgId, status])
+}
+
+/// Kredi mahsubu (retirement) — belediyenin edindiği krediyi bir yılın envanterine sayması; geri alınamaz
+model CreditRetirement {
+  id            String @id @default(cuid())
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  transactionId String
+  transaction   CreditTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  year          Int // mahsup edilen envanter yılı
+  amountTCO2e   Float
+  note          String?
+  createdById   String?
+  createdAt     DateTime @default(now())
+
+  @@index([orgId, year])
+  @@index([transactionId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// KarbonBank envanteri — karbon kredisi bankasının varlık defteri
+// (yalnız KARBON_BANK kurumları doldurur; belediye şemasından bağımsız)
+// ─────────────────────────────────────────────────────────────
+
+/// Proje geliştirici / kredi tedarikçisi
+model ProjectDeveloper {
+  id        String  @id @default(cuid())
+  bankOrgId String
+  bankOrg   Organization @relation("BankDevelopers", fields: [bankOrgId], references: [id], onDelete: Cascade)
+  name      String
+  country   String  @default("Türkiye")
+  contact   String?
+  rating    String? // A | B | C tedarikçi güven notu
+  active    Boolean @default(true)
+  createdAt DateTime @default(now())
+
+  projects CreditProject[]
+
+  @@index([bankOrgId, active])
+}
+
+/// Kredi projesi — portföydeki veya geliştirme hattındaki karbon projesi
+model CreditProject {
+  id              String  @id @default(cuid())
+  bankOrgId       String
+  bankOrg         Organization @relation("BankProjects", fields: [bankOrgId], references: [id], onDelete: Cascade)
+  developerId     String?
+  developer       ProjectDeveloper? @relation(fields: [developerId], references: [id], onDelete: SetNull)
+  name            String
+  projectType     String // AGACLANDIRMA | YENILENEBILIR | ENERJI_VERIMLILIGI | METAN | BIYOKOMUR | MAVI_KARBON | DAC | TEMIZ_OCAK
+  standard        String // GOLD_STANDARD | VCS | ULUSAL | CDM | ACR
+  methodology     String?
+  region          String // Türkiye bölgesi / il
+  lat             Float?
+  lng             Float?
+  vintageYear     Int
+  stage           String  @default("FIZIBILITE") // FIZIBILITE | VALIDASYON | DOGRULAMA | IHRAC | AKTIF
+  expectedTCO2e   Float   @default(0) // beklenen ya da ihraç edilen hacim
+  qualityRating   String? // AAA..D
+  reversalRiskPct Float   @default(0) // kalıcılık / geri-dönüş riski
+  active          Boolean @default(true)
+  createdAt       DateTime @default(now())
+
+  pools CreditPool[]
+
+  @@index([bankOrgId, stage])
+  @@index([bankOrgId, projectType])
+}
+
+/// Ticaret masası emri (order book) — spot al/sat
+model TradeOrder {
+  id             String @id @default(cuid())
+  bankOrgId      String
+  bankOrg        Organization @relation("BankOrders", fields: [bankOrgId], references: [id], onDelete: Cascade)
+  side           String // AL | SAT
+  standard       String
+  vintageYear    Int
+  amountTCO2e    Float
+  priceTRYPerTon Float
+  status         String  @default("ACIK") // ACIK | ESLESTI | IPTAL
+  counterparty   String?
+  createdAt      DateTime @default(now())
+
+  @@index([bankOrgId, status])
+}
+
+/// Fiyat eğrisi noktası — standart + vintage bazlı zaman serisi
+model PriceCurve {
+  id             String   @id @default(cuid())
+  bankOrgId      String
+  bankOrg        Organization @relation("BankPrices", fields: [bankOrgId], references: [id], onDelete: Cascade)
+  standard       String
+  vintageYear    Int
+  date           DateTime
+  priceTRYPerTon Float
+
+  @@index([bankOrgId, standard, vintageYear])
+}
+
+/// Müşteri (alıcı) hesabı — bankanın belediye / sanayi müşterisi
+model ClientAccount {
+  id             String @id @default(cuid())
+  bankOrgId      String
+  bankOrg        Organization @relation("BankClients", fields: [bankOrgId], references: [id], onDelete: Cascade)
+  clientOrgId    String
+  clientOrg      Organization @relation("ClientOf", fields: [clientOrgId], references: [id], onDelete: Cascade)
+  segment        String // BELEDIYE | SANAYI | KAMU
+  creditLimitTRY Float   @default(0)
+  balanceTCO2e   Float   @default(0) // edinilmiş bakiye
+  status         String  @default("AKTIF") // AKTIF | BEKLEMEDE | PASIF
+  createdAt      DateTime @default(now())
+
+  @@unique([bankOrgId, clientOrgId])
+  @@index([bankOrgId, segment])
+}
+
+// ─────────────────────────────────────────────────────────────
+// KLEAF Denetim (D1-D3) — kleaf şirketinin banka↔belediye gözetim katmanı
+// ComplianceFlag: otomatik bayrak (çifte sayım, brüt aşım, buffer altı, fiyat anomali, aşırı yoğunlaşma)
+// AuditDecision: denetçinin manuel kararı (ONAY | ASKI | ITIRAZ)
+// ─────────────────────────────────────────────────────────────
+
+/// Uyum bayrağı — otomatik kural motoru veya denetçi tarafından açılır
+model ComplianceFlag {
+  id             String  @id @default(cuid())
+  transactionId  String?
+  transaction    CreditTransaction? @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  orgId          String // banka veya alıcı kurum
+  org            Organization @relation("OrgFlags", fields: [orgId], references: [id], onDelete: Cascade)
+  tur            String // CIFTE_SAYIM | BUFFER_ALTI | FIYAT_ANOMALI | ASIRI_YOGUNLASMA | BRUT_ASIM
+  onem           String // DUSUK | ORTA | YUKSEK
+  aciklama       String
+  durum          String  @default("ACIK") // ACIK | COZULDU
+  cozumNotu      String?
+  cozenId        String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([durum, onem])
+  @@index([orgId])
+  @@index([transactionId])
+}
+
+/// Denetim kararı — kleaf denetçisinin bir işlemle ilgili kararı
+model AuditDecision {
+  id             String  @id @default(cuid())
+  transactionId  String
+  transaction    CreditTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  denetciId      String
+  karar          String // ONAY | ASKI | ITIRAZ
+  not            String?
+  createdAt      DateTime @default(now())
+
+  @@index([transactionId])
+  @@index([denetciId])
+}
+
+/// Şube açılım aday şehri — 3D fırsat haritası verisi (Türkiye)
+model BranchCandidate {
+  id            String @id @default(cuid())
+  bankOrgId     String
+  bankOrg       Organization @relation("BankBranches", fields: [bankOrgId], references: [id], onDelete: Cascade)
+  city          String
+  plate         Int // il plaka kodu
+  lat           Float
+  lng           Float
+  demandScore   Float   @default(0) // talep (belediye emisyonu / offset ihtiyacı)
+  supplyScore   Float   @default(0) // arz potansiyeli (proje kaynağı)
+  industryScore Float   @default(0) // sanayi yoğunluğu
+  population    Int     @default(0)
+  opportunity   Float   @default(0) // bileşik fırsat skoru (0-100)
+  status        String  @default("ADAY") // ADAY | PLANLANDI | ACILDI | MERKEZ
+  active        Boolean @default(true)
+  createdAt     DateTime @default(now())
+
+  @@index([bankOrgId, status])
+}

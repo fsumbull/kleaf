@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-sg), ui-sans-serif, system-ui, sans-serif;
+
+  /* karbonbank mavi paleti (değişken adları 'leaf' korunur — tüm bileşenler çalışsın) */
+  --color-ink: #0c2a4a;          /* koyu mavi metin */
+  --color-leaf-50: #eff6ff;
+  --color-leaf-100: #dbeafe;
+  --color-leaf-200: #bfdbfe;
+  --color-leaf-300: #93c5fd;
+  --color-leaf-400: #60a5fa;
+  --color-leaf-500: #3b82f6;
+  --color-leaf-600: #2563eb;
+  --color-leaf-700: #1d4ed8;
+  --color-leaf-800: #1e40af;
+  --color-mist: #eff6ff;
+  --color-paper: #fdfdff;
+  --color-warm: #d97706;         /* uyarı amberi */
+  --color-danger: #dc2626;
+}
+
+:root {
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html { color-scheme: light; }
+
+body {
+  background:
+    radial-gradient(1200px 700px at 85% -10%, #dbeafe66 0%, transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, #bfdbfe4d 0%, transparent 55%),
+    linear-gradient(160deg, var(--color-paper) 0%, var(--color-mist) 100%);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  min-height: 100dvh;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: #bfdbfe; color: #0c2a4a; }
+
+/* ── buzlu cam kart ── */
+.glass {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  box-shadow: 0 1px 2px rgba(12, 42, 74, 0.04), 0 12px 32px -18px rgba(12, 42, 74, 0.18);
+  border-radius: 1.25rem;
+}
+.glass-strong {
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  box-shadow: 0 2px 4px rgba(12, 42, 74, 0.05), 0 24px 56px -24px rgba(12, 42, 74, 0.28);
+  border-radius: 1.5rem;
+}
+
+/* ── küçük harf başlık dili ── */
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: lowercase;
+  color: #2563eb;
+  font-weight: 500;
+}
+
+/* ── iskelet yükleyici ── */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: #e0ecff;
+  border-radius: 0.75rem;
+}
+.skeleton::after {
+  content: "";
+  position: absolute; inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.7), transparent);
+  animation: shimmer 1.6s infinite;
+}
+@keyframes shimmer { 100% { transform: translateX(100%); } }
+
+/* ── ince kaydırma çubuğu ── */
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: #bfdbfe; border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-thumb:hover { background: #93c5fd; background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* ── giriş animasyonları ── */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+.rise { animation: rise 0.7s var(--ease) both; }
+.rise-1 { animation-delay: 0.06s; } .rise-2 { animation-delay: 0.12s; }
+.rise-3 { animation-delay: 0.18s; } .rise-4 { animation-delay: 0.24s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rise, .skeleton::after { animation: none; }
+}
