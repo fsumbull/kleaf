@@ -71,7 +71,7 @@ export default async function VeriGirisiPage({ searchParams }: {
         facility: { select: { name: true } },
         vehicle: { select: { plateNo: true } },
         emissionRecord: { select: { tCO2e: true } },
-        documents: { select: { id: true, fileName: true } },
+        documents: { select: { id: true, fileName: true, mime: true } },
       },
       orderBy: [{ year: "desc" }, { month: "desc" }, { facility: { name: "asc" } }],
       skip: (page - 1) * PAGE_SIZE,
@@ -93,7 +93,7 @@ export default async function VeriGirisiPage({ searchParams }: {
     documentRef: a.documentRef,
     status: a.status,
     tCO2e: a.emissionRecord?.tCO2e ?? null,
-    documents: a.documents.map((doc) => ({ id: doc.id, fileName: doc.fileName })),
+    documents: a.documents.map((doc) => ({ id: doc.id, fileName: doc.fileName, mime: doc.mime })),
   }));
 
   const canEdit = ["SUPER_ADMIN", "IKLIM_MERKEZI", "MUDURLUK_VERI", "ENERJI_YONETICISI", "FILO_YONETICISI", "ATIK_UZMANI"].includes(session.role);

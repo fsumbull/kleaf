@@ -21,6 +21,7 @@ const NAV: { group: string; items: NavItem[] }[] = [
     group: "analitik",
     items: [
       { href: "/ulusal-envanter", label: "ulusal envanter", icon: "M3 3v18h18M7 15l4-4 3 3 5-6" },
+      { href: "/kiyas", label: "belediye kıyas", icon: "M8 13v5m4-9v9m4-13v13M4 21h16" },
       { href: "/risk-skorlari", label: "risk skorları", icon: "M12 2l2.6 5.3 5.9.9-4.2 4.1 1 5.8L12 15.4 6.7 18l1-5.8-4.2-4.1 5.9-.9z" },
       { href: "/faktor-denetim", label: "faktör denetimi", icon: "M4 4h4v4H4zM10 4h10v2H10zM10 10h10v2H10zM10 16h10v2H10zM4 10h4v4H4zM4 16h4v4H4z" },
       { href: "/piyasa", label: "piyasa gözetim", icon: "M3 17l6-6 4 4 8-8M14 7h7v7" },

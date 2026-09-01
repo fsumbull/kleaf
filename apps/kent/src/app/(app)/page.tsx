@@ -4,7 +4,7 @@ import { getScope } from "@/lib/auth";
 import { getEmissionRows, getMissingData, getLatestPeriod, getPendingCount, categoryLabel } from "@/lib/data";
 import {
   yearScopeTotals, monthlyScopeTotals, totalsByCategory, totalsByFacility,
-  yoyChangePct, intensity, targetGapPct, scopeOf,
+  yoyChangePct, intensity, targetGapPct, scopeOf, yilSonuTahmini, type AylikNokta,
 } from "@/lib/carbon/engine";
 import { prisma } from "@/lib/prisma";
 import { fmtTons, fmt1 } from "@/lib/format";
@@ -52,6 +52,13 @@ export default async function GenelBakis() {
 
   // eksik veri (girilen son dönem için)
   const missing = latest ? await getMissingData(org.id, latest.year, latest.month, bu) : [];
+
+  // yıl sonu tahmini — tüm yılların aylık serisinden mevsimsel projeksiyon
+  const tumAylikSeri: AylikNokta[] = [...monthlyScopeTotals(rows).entries()].map(([k, t]) => {
+    const [yy, mm] = k.split("-").map(Number);
+    return { year: yy, month: mm, tCO2e: t.total };
+  });
+  const tahmin = yilSonuTahmini(tumAylikSeri, year);
 
   const hasData = totals.total > 0;
 
@@ -115,6 +122,29 @@ export default async function GenelBakis() {
                 tone={gap !== null && gap > 0 ? "danger" : "leaf"} />
             </div>
           </div>
+
+          {tahmin && tahmin.gerceklesenAy < 12 && tahmin.tahminKalan > 0 && (
+            <div className="rise-4 mb-6">
+              <Card>
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-[12.5px]">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-ink/45">yıl sonu tahmini</span>
+                  <span className="text-[17px] font-semibold tabular-nums text-ink">{fmtTons(tahmin.yilSonu)} tCO₂e</span>
+                  <span className="text-ink/50">
+                    gerçekleşen {fmtTons(tahmin.gerceklesen)} ({tahmin.gerceklesenAy} ay) + mevsimsel projeksiyon {fmtTons(tahmin.tahminKalan)}
+                  </span>
+                  {target && (
+                    <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                      tahmin.yilSonu > target.targetTCO2e ? "bg-amber-100 text-warm" : "bg-leaf-100 text-leaf-800"
+                    }`}>
+                      {tahmin.yilSonu > target.targetTCO2e
+                        ? `hedefin ${fmt1(((tahmin.yilSonu - target.targetTCO2e) / target.targetTCO2e) * 100)}% üzerinde seyrediyor`
+                        : "hedefle uyumlu seyrediyor"}
+                    </span>
+                  )}
+                </div>
+              </Card>
+            </div>
+          )}
 
           <div className="mb-6 grid gap-4 xl:grid-cols-[1.6fr_1fr]">
             <MonthlyTrendChart data={monthlyData} year={year} />

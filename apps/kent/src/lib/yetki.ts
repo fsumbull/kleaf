@@ -77,6 +77,7 @@ export const ROUTE_ROLLER: Record<string, Role[] | undefined> = {
   "/": undefined,
   "/veri-girisi": undefined, // görüntüleme herkese; yazma API'da kısıtlı
   "/veri-kalite": undefined,
+  "/gorevler": undefined, // görüntüleme herkese; atama API'da MERKEZ_ROLLER
   "/tesisler": undefined,
   "/binalar": undefined,
   "/filo": undefined,
@@ -91,6 +92,7 @@ export const ROUTE_ROLLER: Record<string, Role[] | undefined> = {
   "/faktorler": undefined,
   "/raporlar": undefined,
   "/envanter": undefined, // görüntüleme herkese; yazma API'da KATALOG_YONETIM_ROLLER
+  "/kiyas": undefined,
   "/karbon-kredi": undefined, // görüntüleme herkese; talep/mahsup API'da KREDI_TALEP_ROLLER
   "/banka": BANKA_GORUNUM_ROLLER,
   "/kurumlar": ["SUPER_ADMIN"],
@@ -112,6 +114,8 @@ export const ROUTE_ORG_TYPES: Record<string, string[] | undefined> = {
   "/karbon-kredi": ["BELEDIYE"],
   "/kent": ["BELEDIYE"],
   "/harita": ["BELEDIYE"],
+  "/gorevler": ["BELEDIYE"],
+  "/kiyas": ["BELEDIYE"],
 };
 
 export function sayfaKurumYetkisi(orgType: string, href: string): boolean {

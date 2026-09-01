@@ -2,6 +2,9 @@
  * Deterministik LCG ile tekrarlanabilir. Onaylı kayıtlar için EmissionRecord (faktör kopyalı) üretilir. */
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { DEFAULT_FACTORS } from "../src/lib/carbon/factors";
 import { computeKgCO2e, kgToTons, scopeOf, CALC_VERSION, linearNetZeroPath, yearScopeTotals, type EmissionRow } from "../src/lib/carbon/engine";
 import type { CategoryCode } from "../src/lib/constants";
@@ -327,7 +330,7 @@ async function seedEnvanterVeBanka(passwordHash: string) {
     ELEKTRIK: [42_000, "cooling"], DOGALGAZ: [7_500, "heating"], DIZEL: [2_800, "flat"],
     BENZIN: [850, "flat"], JENERATOR_DIZEL: [260, "flat"], SOGUTUCU_GAZ: [14, "cooling"],
   };
-  type Row = { facilityId: string; inventoryItemId: string; inventoryKey: string; year: number; month: number; category: CategoryCode; amount: number; unit: string; status: string; documentRef: string };
+  type Row = { facilityId: string; inventoryItemId?: string; inventoryKey?: string; vehicleId?: string; vehicleKey?: string; year: number; month: number; category: CategoryCode; amount: number; unit: string; status: string; documentRef: string };
   const ibbRows: Row[] = [];
   const hesaplanabilir = ibbItems.filter((i) => i.mode === "HESAPLANABILIR" && i.categoryCode);
   for (const item of hesaplanabilir) {
@@ -346,6 +349,95 @@ async function seedEnvanterVeBanka(passwordHash: string) {
         year, month, category: cat, amount, unit: categoryMeta(cat).unit, status,
         documentRef: `IBB-${year}${String(month).padStart(2, "0")}-${item.id.slice(-4).toUpperCase()}`,
       });
+    }
+  }
+
+  // ── İBB özel tesisleri: GES, atık aktarma, arıtma, aydınlatma, kampüs ──
+  // Envanter kalemleri yalnız bina enerji/yakıt kategorilerini kapsıyor; sektörel
+  // paneller (atık/atıksu/GES/filo/binalar) için gerçekçi tesis + kategori verisi burada üretilir.
+  console.log("→ İBB sektörel tesisler + araç filosu…");
+  const KREDI_KATEGORILER = new Set<CategoryCode>(["GES_URETIM", "GES_SATIS", "BIYOGAZ_URETIM", "GERI_DONUSUM", "KOMPOST"]);
+  interface OzelTesis {
+    name: string; type: string; unit: string;
+    areaM2?: number; staffCount?: number; lat: number; lng: number;
+    installedKwp?: number; commissionYear?: number; capexTRY?: number;
+    lines: Partial<Record<CategoryCode, [number, SeasonKind]>>;
+  }
+  const ozelTesisler: OzelTesis[] = [
+    { name: "Merkez Kampüs", type: "KAMPUS", unit: "Destek Hizmetleri DB", areaM2: 42_000, staffCount: 1_850, lat: 41.013, lng: 28.955,
+      lines: { ELEKTRIK: [120_000, "cooling"], DOGALGAZ: [14_000, "heating"], KOMUR: [3_800, "heating"], SU: [8_500, "flat"], UCUS_KM: [52_000, "flat"] } },
+    { name: "Kadıköy Aktarma Merkezi GES", type: "GES", unit: "Destek Hizmetleri DB", lat: 40.992, lng: 29.032,
+      installedKwp: 1_250, commissionYear: 2024, capexTRY: 32_000_000,
+      lines: { GES_URETIM: [148_000, "solar"], GES_SATIS: [18_000, "solar"] } },
+    { name: "Tuzla Arıtma Sahası GES", type: "GES", unit: "Çevre Koruma ve Kontrol DB", lat: 40.838, lng: 29.284,
+      installedKwp: 800, commissionYear: 2025, capexTRY: 22_000_000,
+      lines: { GES_URETIM: [95_000, "solar"] } },
+    { name: "Kısıklı Atık Aktarma Merkezi", type: "TESIS", unit: "Çevre Koruma ve Kontrol DB", areaM2: 6_500, staffCount: 85, lat: 41.028, lng: 29.072,
+      lines: { ATIK: [950, "flat"], GERI_DONUSUM: [260, "flat"], KOMPOST: [105, "flat"], ELEKTRIK: [34_000, "flat"], DIZEL: [9_800, "flat"] } },
+    { name: "Baltalimanı İleri Biyolojik Arıtma Tesisi", type: "TESIS", unit: "Çevre Koruma ve Kontrol DB", areaM2: 18_000, staffCount: 140, lat: 41.101, lng: 29.053,
+      lines: { ATIKSU_DEBI: [1_800_000, "flat"], ARITMA_ENERJI: [620_000, "flat"], CAMUR: [900, "flat"], ATIKSU_METAN: [190_000, "flat"], BIYOGAZ_URETIM: [210_000, "flat"] } },
+    { name: "Kent Aydınlatma Şebekesi", type: "AYDINLATMA", unit: "Yol Bakım ve Altyapı Koordinasyon DB", lat: 41.04, lng: 28.99,
+      lines: { ELEKTRIK: [680_000, "lighting"] } },
+    { name: "Edirnekapı Araç Filosu Garajı", type: "ARAC_FILOSU", unit: "Ulaşım DB", areaM2: 12_000, staffCount: 210, lat: 41.031, lng: 28.938,
+      lines: { DIZEL: [3_800, "flat"], ELEKTRIK: [18_000, "flat"] } },
+  ];
+  const ozelFacMap = new Map<string, string>();
+  for (const t of ozelTesisler) {
+    const fac = await prisma.facility.create({
+      data: {
+        name: t.name, type: t.type, orgId: ibb.id, unitId: ibbUnitMap.get(t.unit) ?? null,
+        areaM2: t.areaM2 ?? null, staffCount: t.staffCount ?? null, lat: t.lat, lng: t.lng,
+        installedKwp: t.installedKwp ?? null, commissionYear: t.commissionYear ?? null, capexTRY: t.capexTRY ?? null,
+      },
+    });
+    ozelFacMap.set(t.name, fac.id);
+    for (const [cat, [taban, kind]] of Object.entries(t.lines) as [CategoryCode, [number, SeasonKind]][]) {
+      for (const { year, month } of MONTHS) {
+        if (t.commissionYear && year < t.commissionYear) continue; // devreye girmeden üretim yok
+        const yearIdx = year - 2024 + (month - 7) / 12;
+        const improve = KREDI_KATEGORILER.has(cat) ? 1 : Math.pow(0.97, Math.max(0, yearIdx));
+        const amount = Math.round(jitter(taban * season[kind](month) * improve));
+        if (amount <= 0) continue;
+        const status = year === LAST.year && month === LAST.month ? "TASLAK" : "ONAYLI";
+        ibbRows.push({
+          facilityId: fac.id, year, month, category: cat, amount, unit: categoryMeta(cat).unit, status,
+          documentRef: `IBB-${year}${String(month).padStart(2, "0")}-${fac.id.slice(-4).toUpperCase()}`,
+        });
+      }
+    }
+  }
+
+  // araç filosu — plaka bazlı yakıt/km kayıtları (filo paneli + anomali demosu)
+  interface IbbArac { plateNo: string; name: string; vehicleType: string; fuelType: string; modelYear: number; lines: Partial<Record<CategoryCode, number>>; spike?: [number, number, number]; }
+  const ibbAraclar: IbbArac[] = [
+    { plateNo: "34 ABC 101", name: "Çöp kamyonu #1", vehicleType: "KAMYON", fuelType: "DIZEL", modelYear: 2019, lines: { DIZEL: 1_450 }, spike: [2026, 3, 2.4] },
+    { plateNo: "34 ABC 102", name: "Çöp kamyonu #2", vehicleType: "KAMYON", fuelType: "DIZEL", modelYear: 2021, lines: { DIZEL: 1_380 } },
+    { plateNo: "34 SPR 103", name: "Yol süpürme aracı", vehicleType: "KAMYONET", fuelType: "DIZEL", modelYear: 2020, lines: { DIZEL: 920 } },
+    { plateNo: "34 OTB 201", name: "Personel servisi #1", vehicleType: "OTOBUS", fuelType: "DIZEL", modelYear: 2018, lines: { DIZEL: 2_100 } },
+    { plateNo: "34 OTB 202", name: "Personel servisi #2 (CNG)", vehicleType: "OTOBUS", fuelType: "CNG", modelYear: 2023, lines: { CNG: 1_800 } },
+    { plateNo: "34 MKM 301", name: "Makam aracı", vehicleType: "BINEK", fuelType: "BENZIN", modelYear: 2022, lines: { BENZIN: 320 } },
+    { plateNo: "34 LPG 401", name: "Saha binek (LPG)", vehicleType: "BINEK", fuelType: "LPG", modelYear: 2021, lines: { LPG: 410 } },
+    { plateNo: "34 KRL 456", name: "Kiralık binek (km takibi)", vehicleType: "BINEK", fuelType: "BENZIN", modelYear: 2024, lines: { ARAC_KM: 5_200 } },
+  ];
+  const garajId = ozelFacMap.get("Edirnekapı Araç Filosu Garajı")!;
+  for (const v of ibbAraclar) {
+    const veh = await prisma.vehicle.create({
+      data: { orgId: ibb.id, facilityId: garajId, plateNo: v.plateNo, name: v.name, vehicleType: v.vehicleType, fuelType: v.fuelType, modelYear: v.modelYear, active: true },
+    });
+    for (const [cat, taban] of Object.entries(v.lines) as [CategoryCode, number][]) {
+      for (const { year, month } of MONTHS) {
+        const yearIdx = year - 2024 + (month - 7) / 12;
+        let amount = jitter(taban * Math.pow(0.97, Math.max(0, yearIdx)));
+        if (v.spike && v.spike[0] === year && v.spike[1] === month) amount *= v.spike[2]; // anomali demosu
+        const rounded = Math.round(amount);
+        if (rounded <= 0) continue;
+        const status = year === LAST.year && month === LAST.month ? "TASLAK" : "ONAYLI";
+        ibbRows.push({
+          facilityId: garajId, vehicleId: veh.id, vehicleKey: veh.id,
+          year, month, category: cat, amount: rounded, unit: categoryMeta(cat).unit, status,
+          documentRef: `AK-${year}${String(month).padStart(2, "0")}-${v.plateNo.replace(/\s/g, "")}`,
+        });
+      }
     }
   }
   await prisma.activityData.createMany({ data: ibbRows });
@@ -368,20 +460,18 @@ async function seedEnvanterVeBanka(passwordHash: string) {
     }),
   });
 
-  // izleme kalemlerine son 6 ay örnek kayıt (ilk 15 kalem)
-  const izlemeItems = ibbItems.filter((i) => i.mode === "IZLEME").slice(0, 15);
-  const izlemeAylar = MONTHS.slice(-6);
-  for (const item of izlemeItems) {
-    for (const { year, month } of izlemeAylar) {
-      await prisma.inventoryEntry.create({
-        data: {
-          orgId: ibb.id, itemId: item.id, year, month,
-          amount: Math.round(jitter(500, 0.35)),
-          note: null,
-        },
-      });
-    }
-  }
+  // izleme kalemlerine son 12 ay kayıt (tüm izleme kalemleri — envanter paneli dolu görünür)
+  const izlemeItems = ibbItems.filter((i) => i.mode === "IZLEME");
+  const izlemeAylar = MONTHS.slice(-12);
+  await prisma.inventoryEntry.createMany({
+    data: izlemeItems.flatMap((item, idx) =>
+      izlemeAylar.map(({ year, month }) => ({
+        orgId: ibb.id, itemId: item.id, year, month,
+        amount: Math.round(jitter(120 + (idx % 12) * 85, 0.35)),
+        note: null,
+      })),
+    ),
+  });
 
   // ── İBB planlama demo varlıkları: hedef patikası, eylem planları, senaryo, mahalle + kent ölçeği ──
   console.log("→ İBB hedef/eylem/senaryo/kent…");
@@ -428,15 +518,33 @@ async function seedEnvanterVeBanka(passwordHash: string) {
     }
   }
 
-  await prisma.scenario.create({
-    data: {
-      orgId: ibb.id, name: "2035 iklim yol haritası",
-      params: JSON.stringify({
-        gesKwp: 25000, filoElektrifikasyonPct: 35, binaVerimlilikPct: 20,
-        ledDonusumPct: 50, yalitimPct: 30, kazanPct: 25,
-        kompostSaptirmaPct: 30, ayristirmaArtisiPct: 25, topluTasimaPct: 15,
-      }),
-    },
+  await prisma.scenario.createMany({
+    data: [
+      {
+        orgId: ibb.id, name: "2035 iklim yol haritası",
+        params: JSON.stringify({
+          gesKwp: 25000, filoElektrifikasyonPct: 35, binaVerimlilikPct: 20,
+          ledDonusumPct: 50, yalitimPct: 30, kazanPct: 25,
+          kompostSaptirmaPct: 30, ayristirmaArtisiPct: 25, topluTasimaPct: 15,
+        }),
+      },
+      {
+        orgId: ibb.id, name: "Hızlı kazanımlar (düşük bütçe)",
+        params: JSON.stringify({
+          gesKwp: 4000, filoElektrifikasyonPct: 10, binaVerimlilikPct: 8,
+          ledDonusumPct: 70, yalitimPct: 5, kazanPct: 10,
+          kompostSaptirmaPct: 15, ayristirmaArtisiPct: 20, topluTasimaPct: 5,
+        }),
+      },
+      {
+        orgId: ibb.id, name: "Agresif 2040 net-sıfır",
+        params: JSON.stringify({
+          gesKwp: 60000, filoElektrifikasyonPct: 80, binaVerimlilikPct: 45,
+          ledDonusumPct: 100, yalitimPct: 60, kazanPct: 55,
+          kompostSaptirmaPct: 50, ayristirmaArtisiPct: 45, topluTasimaPct: 35,
+        }),
+      },
+    ],
   });
 
   await prisma.neighborhood.createMany({
@@ -458,9 +566,9 @@ async function seedEnvanterVeBanka(passwordHash: string) {
     ["ATIK", "ATIK", 4_600_000], ["ATIKSU", "SU", 780_000_000],
   ];
   await prisma.cityActivity.createMany({
-    data: ibbCityData.flatMap(([sector, category, base]) => [2024, 2025].map((year) => ({
+    data: ibbCityData.flatMap(([sector, category, base]) => [2024, 2025, 2026].map((year) => ({
       orgId: ibb.id, year, sector, category,
-      amount: Math.round(jitter(year === 2024 ? base : base * 0.97, 0.03)),
+      amount: Math.round(jitter(base * Math.pow(0.97, year - 2024), 0.03)),
       status: "ONAYLI",
     }))),
   });
@@ -537,12 +645,15 @@ async function seedEnvanterVeBanka(passwordHash: string) {
     }
   }
 
-  // fiyat eğrisi — son 6 ay, 3 standart
+  // fiyat eğrisi — son 24 ay, 3 standart (piyasa panelinde tam geçmiş)
   const fiyatBaz: Record<string, [number, number]> = { GOLD_STANDARD: [950, 2024], VCS: [720, 2025], ULUSAL: [480, 2023] };
   const priceRows: { bankOrgId: string; standard: string; vintageYear: number; date: Date; priceTRYPerTon: number }[] = [];
   for (const [std, [baz, vintage]] of Object.entries(fiyatBaz)) {
-    for (let i = 5; i >= 0; i--) {
-      priceRows.push({ bankOrgId: banka.id, standard: std, vintageYear: vintage, date: new Date(2026, 6 - i, 1), priceTRYPerTon: Math.round(jitter(baz * (1 + (5 - i) * 0.02), 0.03)) });
+    for (let i = 0; i < MONTHS.length; i++) {
+      const { year, month } = MONTHS[i];
+      // hafif yükselen trend + mevsimsiz gürültü — son ay baz fiyata yakınsar
+      const trend = baz * (0.82 + 0.18 * (i / (MONTHS.length - 1)));
+      priceRows.push({ bankOrgId: banka.id, standard: std, vintageYear: vintage, date: new Date(year, month - 1, 1), priceTRYPerTon: Math.round(jitter(trend, 0.04)) });
     }
   }
   await prisma.priceCurve.createMany({ data: priceRows });
@@ -761,6 +872,10 @@ async function seedEnvanterVeBanka(passwordHash: string) {
     eylemler: { title: string; description: string; budgetTRY: number; targetReductionTCO2e: number; status: string; owner: string; startYear: number; startDate?: string; endDate?: string; riskNote?: string; progressAchieved?: number; progressSpent?: number }[];
     kredi: { poolIdx: number; amount: number; status: string; requestNote: string; decisionNote?: string; retire?: number }[];
     veriGecikmesiAy?: number;
+    /** isteğe bağlı GES tesisi — GES paneli boş kalmasın */
+    ges?: { name: string; installedKwp: number; commissionYear: number; capexTRY: number; uretimAylik: number };
+    /** isteğe bağlı hazır senaryo */
+    senaryo?: { name: string; params: Record<string, number> };
   };
   const belPlans: BelPlan[] = [
     {
@@ -787,6 +902,7 @@ async function seedEnvanterVeBanka(passwordHash: string) {
         { poolIdx: 0, amount: 2_200, status: "DENETIM_ASKI", requestNote: "başkent metro artık telafisi" },
       ],
       veriGecikmesiAy: 0,
+      senaryo: { name: "Başkent 2030 ara hedef", params: { gesKwp: 12000, filoElektrifikasyonPct: 25, binaVerimlilikPct: 15, ledDonusumPct: 60, yalitimPct: 20, kazanPct: 20, kompostSaptirmaPct: 20, ayristirmaArtisiPct: 15, topluTasimaPct: 20 } },
     },
     {
       name: "İzmir Büyükşehir Belediyesi", baselineYear: 2024, netZeroYear: 2045, portalAcik: true, olcek: 0.6,
@@ -809,6 +925,8 @@ async function seedEnvanterVeBanka(passwordHash: string) {
         { poolIdx: 2, amount: 950, status: "BANKA_ONAY", requestNote: "İZSU pompa istasyonu artık emisyon" },
       ],
       veriGecikmesiAy: 2,
+      ges: { name: "Harıncı Güneş Santrali", installedKwp: 600, commissionYear: 2025, capexTRY: 16_500_000, uretimAylik: 71_000 },
+      senaryo: { name: "Körfez temiz enerji planı", params: { gesKwp: 9000, filoElektrifikasyonPct: 30, binaVerimlilikPct: 18, ledDonusumPct: 55, yalitimPct: 25, kazanPct: 15, kompostSaptirmaPct: 25, ayristirmaArtisiPct: 30, topluTasimaPct: 25 } },
     },
     {
       name: "Bursa Büyükşehir Belediyesi", baselineYear: 2024, netZeroYear: 2050, portalAcik: false, olcek: 0.4,
@@ -836,6 +954,7 @@ async function seedEnvanterVeBanka(passwordHash: string) {
   const BEL_TABAN: Record<string, [number, SeasonKind]> = {
     ELEKTRIK: [38_000, "cooling"], DOGALGAZ: [6_800, "heating"], DIZEL: [2_600, "flat"],
     BENZIN: [780, "flat"], JENERATOR_DIZEL: [220, "flat"], SOGUTUCU_GAZ: [12, "cooling"],
+    ATIK: [28, "flat"], GERI_DONUSUM: [8, "flat"], SU: [1_150, "flat"],
   };
 
   const belOrgs: { orgId: string; name: string; adminId: string; mudurlukId: string; kredi: BelPlan["kredi"]; olcek: number; adminEmail: string }[] = [];
@@ -878,6 +997,29 @@ async function seedEnvanterVeBanka(passwordHash: string) {
             documentRef: `${plan.name.slice(0, 3).toUpperCase()}-${year}${String(month).padStart(2, "0")}-${facilityId.slice(-4).toUpperCase()}`,
           });
         }
+      }
+    }
+    // isteğe bağlı GES tesisi — üretim kayıtları (devreye alma yılından itibaren)
+    if (plan.ges) {
+      const g = plan.ges;
+      const gesFac = await prisma.facility.create({
+        data: {
+          name: g.name, type: "GES", orgId: belOrg.id, unitId: belUnitMap.get("Fen İşleri DB") ?? null,
+          lat: plan.latMerkez + 0.04, lng: plan.lngMerkez - 0.05,
+          installedKwp: g.installedKwp, commissionYear: g.commissionYear, capexTRY: g.capexTRY,
+        },
+      });
+      for (const { year, month } of MONTHS) {
+        if (year < g.commissionYear) continue;
+        const amount = Math.round(jitter(g.uretimAylik * season.solar(month)));
+        if (amount <= 0) continue;
+        const monthsFromEnd = (LAST.year - year) * 12 + (LAST.month - month);
+        const status = monthsFromEnd < (plan.veriGecikmesiAy ?? 0) + 1 ? "TASLAK" : "ONAYLI";
+        belRows.push({
+          facilityId: gesFac.id, year, month, category: "GES_URETIM", amount,
+          unit: categoryMeta("GES_URETIM").unit, status,
+          documentRef: `GES-${year}${String(month).padStart(2, "0")}-${gesFac.id.slice(-4).toUpperCase()}`,
+        });
       }
     }
     await prisma.activityData.createMany({ data: belRows });
@@ -939,6 +1081,13 @@ async function seedEnvanterVeBanka(passwordHash: string) {
     await prisma.neighborhood.createMany({
       data: plan.mahalleler.map((n) => ({ orgId: belOrg.id, name: n.name, population: n.population, lat: n.lat, lng: n.lng })),
     });
+
+    // isteğe bağlı hazır senaryo
+    if (plan.senaryo) {
+      await prisma.scenario.create({
+        data: { orgId: belOrg.id, name: plan.senaryo.name, params: JSON.stringify(plan.senaryo.params) },
+      });
+    }
 
     // kullanıcılar (admin + müdürlük)
     const admin = await prisma.user.create({
@@ -1084,6 +1233,124 @@ async function seedEnvanterVeBanka(passwordHash: string) {
   }
   await prisma.auditLog.createMany({ data: logs });
 
+  // ═══════════════════════════════════════════════════════
+  // Dönem kilitleri — ilk 12 ay (2024-07 → 2025-06) KAPANDI
+  // ═══════════════════════════════════════════════════════
+  console.log("→ dönem kilitleri…");
+  const kilitliAylar = MONTHS.slice(0, 12);
+  const donemOrgIds = [ibb.id, ...belOrgs.map((b) => b.orgId)];
+  await prisma.period.createMany({
+    data: donemOrgIds.flatMap((orgId) =>
+      kilitliAylar.map(({ year, month }) => ({
+        orgId, year, month, status: "KAPANDI",
+        closedAt: new Date(year, month, 12), // takip eden ayın 12'si
+      })),
+    ),
+  });
+
+  // ═══════════════════════════════════════════════════════
+  // Veri toplama görevleri (DataTask) — tamamlanan/geciken/bekleyen karışımı
+  // ═══════════════════════════════════════════════════════
+  console.log("→ veri toplama görevleri…");
+  const gun = 24 * 60 * 60 * 1000;
+  const simdi = Date.now();
+  const gorevler: { orgId: string; unitId: string; year: number; month: number; category: string; dueDate: Date; status: string }[] = [];
+  const ibbGorevPlani: [string, string, number, string][] = [
+    // [birim, kategori, dueDate offset (gün, - geçmiş), durum]
+    ["Çevre Koruma ve Kontrol DB", "ATIK", -55, "TAMAMLANDI"],
+    ["Ulaşım DB", "DIZEL", -48, "TAMAMLANDI"],
+    ["Sağlık DB", "ELEKTRIK", -41, "TAMAMLANDI"],
+    ["İtfaiye DB", "DIZEL", -18, "BEKLIYOR"], // gecikmiş
+    ["Park Bahçe ve Yeşil Alanlar DB", "SU", -11, "BEKLIYOR"], // gecikmiş
+    ["Raylı Sistem DB", "ELEKTRIK", -6, "BEKLIYOR"], // gecikmiş
+    ["Destek Hizmetleri DB", "DOGALGAZ", 12, "BEKLIYOR"],
+    ["Gençlik ve Spor Hizmetleri DB", "ELEKTRIK", 19, "BEKLIYOR"],
+    ["Mezarlıklar Daire Başkanlığı", "BENZIN", 26, "BEKLIYOR"],
+  ];
+  for (const [birim, category, offsetGun, status] of ibbGorevPlani) {
+    const unitId = ibbUnitMap.get(birim);
+    if (!unitId) continue;
+    const due = new Date(simdi + offsetGun * gun);
+    gorevler.push({
+      orgId: ibb.id, unitId, category, dueDate: due, status,
+      year: offsetGun < 0 ? LAST.year : due.getFullYear(),
+      month: offsetGun < 0 ? LAST.month : due.getMonth() + 1,
+    });
+  }
+  const ankaraCevreUnit = await prisma.unit.findFirst({ where: { orgId: ankaraOrg.orgId, name: "Çevre Koruma ve Kontrol DB" } });
+  if (ankaraCevreUnit) {
+    gorevler.push(
+      { orgId: ankaraOrg.orgId, unitId: ankaraCevreUnit.id, category: "ELEKTRIK", dueDate: new Date(simdi - 9 * gun), status: "BEKLIYOR", year: LAST.year, month: LAST.month },
+      { orgId: ankaraOrg.orgId, unitId: ankaraCevreUnit.id, category: "ATIK", dueDate: new Date(simdi + 15 * gun), status: "BEKLIYOR", year: LAST.year, month: LAST.month },
+    );
+  }
+  await prisma.dataTask.createMany({ data: gorevler });
+
+  // ═══════════════════════════════════════════════════════
+  // Kanıt belgeleri — uploads/ altına örnek dosyalar + Document kayıtları
+  // ═══════════════════════════════════════════════════════
+  console.log("→ kanıt belgeleri…");
+  const uploadDir = path.join(process.cwd(), "uploads");
+  await mkdir(uploadDir, { recursive: true });
+  // 1×1 yeşil PNG (geçerli görüntü — fatura fotoğrafı yer tutucusu)
+  const pngBuf = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  );
+  // küçük geçerli PDF (metinli tek sayfa)
+  const pdfIcerik = "BT /F1 11 Tf 24 100 Td (kleaf demo kanit belgesi) Tj ET";
+  const pdfBuf = Buffer.from(
+    [
+      "%PDF-1.4",
+      "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
+      "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
+      "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 320 144] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj",
+      "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
+      `5 0 obj << /Length ${Buffer.byteLength(pdfIcerik)} >> stream`,
+      pdfIcerik,
+      "endstream endobj",
+      "trailer << /Root 1 0 R /Size 6 >>",
+      "%%EOF",
+    ].join("\n"),
+    "utf8",
+  );
+  const cevreUser = await prisma.user.findUniqueOrThrow({ where: { email: "ibb-cevre@kleaf.co" } });
+  const belgeAdaylari = await prisma.activityData.findMany({
+    where: { facility: { orgId: ibb.id }, year: LAST.year, month: { in: [LAST.month, LAST.month - 1, LAST.month - 2] } },
+    select: { id: true, category: true, year: true, month: true },
+    orderBy: { id: "asc" },
+    take: 24,
+  });
+  const belgeRows: { orgId: string; activityDataId: string; fileName: string; storedName: string; mime: string; size: number; uploadedById: string }[] = [];
+  for (let i = 0; i < belgeAdaylari.length; i++) {
+    const a = belgeAdaylari[i];
+    const pdfMi = i % 3 === 0;
+    const storedName = `seed-belge-${String(i + 1).padStart(2, "0")}.${pdfMi ? "pdf" : "png"}`;
+    await writeFile(path.join(uploadDir, storedName), pdfMi ? pdfBuf : pngBuf);
+    belgeRows.push({
+      orgId: ibb.id, activityDataId: a.id,
+      fileName: `${a.category.toLowerCase()}-fatura-${a.year}-${String(a.month).padStart(2, "0")}.${pdfMi ? "pdf" : "png"}`,
+      storedName, mime: pdfMi ? "application/pdf" : "image/png",
+      size: pdfMi ? pdfBuf.length : pngBuf.length,
+      uploadedById: cevreUser.id,
+    });
+  }
+  await prisma.document.createMany({ data: belgeRows });
+
+  // ═══════════════════════════════════════════════════════
+  // Entegrasyon API anahtarları — /api/v1/olcum demo (anahtar düz metni konsola yazılır)
+  // ═══════════════════════════════════════════════════════
+  console.log("→ API anahtarları…");
+  const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
+  const scadaAnahtar = "kleaf_scada_ibb_demo_2026";
+  const sayacAnahtar = "kleaf_sayac_ibb_demo_2026";
+  await prisma.apiKey.createMany({
+    data: [
+      { orgId: ibb.id, name: "İSKİ SCADA entegrasyonu", prefix: scadaAnahtar.slice(0, 8), keyHash: sha256hex(scadaAnahtar), active: true, lastUsedAt: new Date(simdi - 2 * gun) },
+      { orgId: ibb.id, name: "Akıllı sayaç ağ geçidi", prefix: sayacAnahtar.slice(0, 8), keyHash: sha256hex(sayacAnahtar), active: true, lastUsedAt: null },
+    ],
+  });
+
   const c = {
     kalem: await prisma.inventoryItem.count(),
     veri: await prisma.activityData.count({ where: { facility: { orgId: ibb.id } } }),
@@ -1096,8 +1363,16 @@ async function seedEnvanterVeBanka(passwordHash: string) {
     bayrak: await prisma.complianceFlag.count(),
     karar: await prisma.auditDecision.count(),
     izKaydi: await prisma.auditLog.count(),
+    arac: await prisma.vehicle.count(),
+    donem: await prisma.period.count(),
+    gorev: await prisma.dataTask.count(),
+    belge: await prisma.document.count(),
+    anahtar: await prisma.apiKey.count(),
+    senaryo: await prisma.scenario.count(),
   };
   console.log(`✓ tam seed — ${c.org} kurum, ${c.kullanici} kullanıcı, ${c.kalem} kalem, ${c.veri} İBB kaydı, ${c.bankaVeri} banka kaydı, ${c.havuz} havuz, ${c.islem} işlem, ${c.bayrak} bayrak, ${c.karar} karar, ${c.izKaydi} audit log`);
+  console.log(`  + ${c.arac} araç, ${c.donem} kapalı dönem, ${c.gorev} görev, ${c.belge} belge, ${c.anahtar} API anahtarı, ${c.izleme} izleme kaydı, ${c.senaryo} senaryo`);
+  console.log(`  demo API anahtarları: ${scadaAnahtar} · ${sayacAnahtar}`);
 }
 
 main()

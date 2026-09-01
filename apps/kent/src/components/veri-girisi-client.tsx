@@ -10,7 +10,8 @@ import {
 } from "@/components/ui";
 import { CATEGORIES, MONTHS_TR, DATA_STATUS } from "@/lib/constants";
 import { fmt2, fmtTons, fmtInt } from "@/lib/format";
-import { OcrPanel, type OcrOneri } from "@/components/ocr-panel";
+import { OcrPanel, ocrTani, type OcrOneri } from "@/components/ocr-panel";
+import { kayitDogrula, plakaNormalize, profilBul, type DogrulamaSonuc } from "@/lib/ocr-profiller";
 
 export interface VeriRow {
   id: string;
@@ -25,7 +26,7 @@ export interface VeriRow {
   documentRef: string | null;
   status: string;
   tCO2e: number | null;
-  documents: { id: string; fileName: string }[];
+  documents: { id: string; fileName: string; mime: string }[];
 }
 
 export interface VehicleOpt { id: string; plateNo: string; name: string | null; facilityId: string | null }
@@ -307,12 +308,17 @@ export function VeriGirisiClient({ rows, facilities, vehicles, kalemler, canEdit
                     {r.tCO2e === null ? <span className="text-ink/30">—</span> :
                       <span className={r.tCO2e < 0 ? "font-medium text-leaf-600" : ""}>{fmtTons(r.tCO2e)}</span>}
                   </td>
-                  <td className="max-w-[150px] truncate text-ink/45">
+                  <td className="max-w-[170px] text-ink/45">
                     {r.documents.length > 0 ? (
-                      <a href={`/api/belgeler?id=${r.documents[0].id}`} className="text-leaf-700 underline decoration-leaf-300 hover:text-leaf-800" title={r.documents[0].fileName}>
-                        📎 {r.documents.length > 1 ? `${r.documents.length} belge` : r.documents[0].fileName}
-                      </a>
-                    ) : (r.documentRef ?? "—")}
+                      <>
+                        <a href={`/api/belgeler?id=${r.documents[0].id}`} className="block truncate text-leaf-700 underline decoration-leaf-300 hover:text-leaf-800" title={r.documents[0].fileName}>
+                          📎 {r.documents.length > 1 ? `${r.documents.length} belge` : r.documents[0].fileName}
+                        </a>
+                        {(canApprove || canUnitApprove) && r.documents[0].mime.startsWith("image/") && (
+                          <BelgeDogrulaBtn docId={r.documents[0].id} row={r} />
+                        )}
+                      </>
+                    ) : (<span className="block truncate">{r.documentRef ?? "—"}</span>)}
                   </td>
                   <td><StatusPill status={r.status} /></td>
                   <td className="whitespace-nowrap text-right">
@@ -430,6 +436,48 @@ function RowBtn({ children, onClick, title, danger }: {
   );
 }
 
+/* belge çapraz doğrulama — yüklü görüntüyü yerel OCR ile okuyup kayıtla karşılaştırır */
+function BelgeDogrulaBtn({ docId, row }: { docId: string; row: VeriRow }) {
+  const [busy, setBusy] = useState(false);
+  const [sonuc, setSonuc] = useState<DogrulamaSonuc | null>(null);
+  const [hata, setHata] = useState(false);
+
+  async function dogrula() {
+    setBusy(true); setHata(false); setSonuc(null);
+    try {
+      const res = await fetch(`/api/belgeler?id=${docId}`);
+      if (!res.ok) throw new Error();
+      const blob = await res.blob();
+      const text = await ocrTani(blob);
+      const alanlar = profilBul("fatura").cikar(text);
+      setSonuc(kayitDogrula(alanlar, { amount: row.amount, year: row.year, month: row.month }));
+    } catch {
+      setHata(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (busy) return <span className="mt-0.5 block text-[10.5px] text-ink/40">belge okunuyor…</span>;
+  if (hata) return <span className="mt-0.5 block text-[10.5px] text-danger/70">OCR başarısız</span>;
+  if (sonuc) {
+    const stil = sonuc.durum === "uyumlu" ? "bg-leaf-100 text-leaf-700"
+      : sonuc.durum === "uyumsuz" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700";
+    return (
+      <span className={`mt-0.5 inline-block cursor-help rounded-full px-1.5 py-px text-[10px] font-medium ${stil}`}
+        title={sonuc.notlar.join(" · ")}>
+        {sonuc.durum === "uyumlu" ? "✓ belge uyumlu" : sonuc.durum === "uyumsuz" ? "✕ belge uyumsuz" : "? belirsiz"}
+      </span>
+    );
+  }
+  return (
+    <button type="button" onClick={dogrula} title="belgeyi OCR ile okuyup miktar/dönem karşılaştır"
+      className="mt-0.5 block cursor-pointer text-[10.5px] text-ink/40 underline decoration-dotted hover:text-leaf-700">
+      OCR doğrula
+    </button>
+  );
+}
+
 /* kanıt belgesi yükleme (PDF/PNG/JPG/XLSX, ≤5 MB) */
 function BelgeYukleBtn({ rowId, onDone, onError }: {
   rowId: string; onDone: () => void; onError: (msg: string) => void;
@@ -526,6 +574,18 @@ function RecordModal({ facilities, vehicles, kalemler, year, initial, prefill, l
     if (o.amount !== undefined) { setValue("amount", o.amount, { shouldValidate: true }); dolan.push(`miktar ${o.amount}`); }
     if (o.category) { setValue("category", o.category, { shouldValidate: true }); dolan.push(CATEGORIES.find((c) => c.code === o.category)?.label ?? o.category); }
     if (o.documentRef) { setValue("documentRef", o.documentRef); dolan.push(`belge no ${o.documentRef}`); }
+    if (o.plateNo) {
+      const hedef = plakaNormalize(o.plateNo);
+      const arac = vehicles.find((v) => plakaNormalize(v.plateNo) === hedef);
+      if (arac) {
+        if (arac.facilityId) setValue("facilityId", arac.facilityId, { shouldValidate: true });
+        setValue("vehicleId", arac.id, { shouldValidate: true });
+        dolan.push(`araç ${arac.plateNo}`);
+      } else {
+        dolan.push(`plaka ${o.plateNo} (kayıtlı araç bulunamadı)`);
+      }
+    }
+    if (o.tutarTRY !== undefined) dolan.push(`tutar ${o.tutarTRY.toLocaleString("tr-TR")} ₺ (bilgi)`);
     setOcrNot(dolan.length ? `belgeden doldu: ${dolan.join(" · ")} — kontrol edip kaydedin` : null);
   }
 

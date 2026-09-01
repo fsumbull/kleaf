@@ -35,6 +35,9 @@ kleaf-dashboard/prisma/*.db-journal
 dev.db
 dev.db-journal
 
+# Runtime upload klasörleri (seed ile üretilir: pnpm db:reset)
+apps/*/uploads/
+
 # Logs
 *.log
 

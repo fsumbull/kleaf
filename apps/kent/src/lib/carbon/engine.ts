@@ -170,6 +170,86 @@ export function trendProjection(yearTotals: Map<number, number>, toYear: number)
   return out;
 }
 
+/* ── mevsimsel tahmin (forecast) ── */
+
+export interface AylikNokta { year: number; month: number; tCO2e: number }
+
+/**
+ * Mevsimsel indeks + doğrusal eğilim ile aylık ileri tahmin.
+ * Son 24 (veya eldeki) aylık noktadan trend çıkarır, ay bazlı mevsimsellik oranlarını
+ * normalize edip ileriye uygular. 4'ten az nokta varsa ortalamayı düz uzatır.
+ */
+export function seasonalForecast(series: AylikNokta[], months = 12): AylikNokta[] {
+  const pts = [...series]
+    .sort((a, b) => a.year - b.year || a.month - b.month)
+    .slice(-24);
+  if (pts.length === 0 || months <= 0) return [];
+
+  const ileriAylar: { year: number; month: number }[] = [];
+  let { year: y, month: m } = pts[pts.length - 1];
+  for (let k = 0; k < months; k++) {
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+    ileriAylar.push({ year: y, month: m });
+  }
+
+  const n = pts.length;
+  if (n < 4) {
+    const ort = pts.reduce((a, p) => a + p.tCO2e, 0) / n;
+    return ileriAylar.map((a) => ({ ...a, tCO2e: Math.max(0, ort) }));
+  }
+
+  // doğrusal eğilim: t (0..n-1) → tCO2e
+  const sx = (n * (n - 1)) / 2;
+  const sxx = pts.reduce((a, _, t) => a + t * t, 0);
+  const sy = pts.reduce((a, p) => a + p.tCO2e, 0);
+  const sxy = pts.reduce((a, p, t) => a + t * p.tCO2e, 0);
+  const denom = n * sxx - sx * sx;
+  const slope = denom === 0 ? 0 : (n * sxy - sx * sy) / denom;
+  const icept = (sy - slope * sx) / n;
+  const trend = (t: number) => slope * t + icept;
+
+  // ay bazlı mevsimsel indeks: gözlem / trend oranlarının ortalaması, ortalaması 1'e normalize
+  const oranlar = new Map<number, number[]>();
+  pts.forEach((p, t) => {
+    const tr = trend(t);
+    if (tr > 0) {
+      const list = oranlar.get(p.month) ?? [];
+      list.push(p.tCO2e / tr);
+      oranlar.set(p.month, list);
+    }
+  });
+  const indeks = new Map<number, number>();
+  for (let ay = 1; ay <= 12; ay++) {
+    const list = oranlar.get(ay);
+    indeks.set(ay, list && list.length ? list.reduce((a, v) => a + v, 0) / list.length : 1);
+  }
+  const indeksOrt = [...indeks.values()].reduce((a, v) => a + v, 0) / 12;
+  if (indeksOrt > 0) for (const [ay, v] of indeks) indeks.set(ay, v / indeksOrt);
+
+  return ileriAylar.map((a, k) => ({
+    ...a,
+    tCO2e: Math.max(0, trend(n + k) * (indeks.get(a.month) ?? 1)),
+  }));
+}
+
+/** Yıl sonu tahmini: gerçekleşen ayların toplamı + kalan ayların mevsimsel tahmini. */
+export function yilSonuTahmini(series: AylikNokta[], year: number): {
+  gerceklesen: number; tahminKalan: number; yilSonu: number; gerceklesenAy: number;
+} | null {
+  const yilNoktalari = series.filter((p) => p.year === year);
+  if (yilNoktalari.length === 0) return null;
+  const sonAy = Math.max(...yilNoktalari.map((p) => p.month));
+  const gerceklesen = yilNoktalari.reduce((a, p) => a + p.tCO2e, 0);
+  if (sonAy >= 12) return { gerceklesen, tahminKalan: 0, yilSonu: gerceklesen, gerceklesenAy: sonAy };
+  const gecmis = series.filter((p) => p.year < year || (p.year === year && p.month <= sonAy));
+  const tahmin = seasonalForecast(gecmis, 12 - sonAy);
+  const tahminKalan = tahmin
+    .filter((p) => p.year === year)
+    .reduce((a, p) => a + p.tCO2e, 0);
+  return { gerceklesen, tahminKalan, yilSonu: gerceklesen + tahminKalan, gerceklesenAy: sonAy };
+}
+
 /* ── senaryo motoru ── */
 
 export interface ScenarioParams {

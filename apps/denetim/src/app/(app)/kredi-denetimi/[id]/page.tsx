@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { PageHeader, Card, CardTitle, EmptyState } from "@/components/ui";
 import { COMPLIANCE_FLAG_TYPE_LABELS, COMPLIANCE_SEVERITY_LABELS } from "@/lib/constants";
 import { KararForm } from "@/components/karar-form";
+import { BelgeTarama } from "@/components/belge-tarama";
 import { notFound } from "next/navigation";
 
 export default async function TxDetay({ params }: { params: Promise<{ id: string }> }) {
@@ -79,6 +80,11 @@ export default async function TxDetay({ params }: { params: Promise<{ id: string
           <Card>
             <CardTitle>karar ver</CardTitle>
             <KararForm txId={tx.id} currentStatus={tx.status} acikBayrakSay={acikBayrak.length} />
+          </Card>
+
+          <Card>
+            <CardTitle>kanıt belgesi tarama (OCR)</CardTitle>
+            <BelgeTarama beklenenMiktar={tx.amountTCO2e} beklenenFiyat={tx.priceTRYPerTon} />
           </Card>
 
           <Card>

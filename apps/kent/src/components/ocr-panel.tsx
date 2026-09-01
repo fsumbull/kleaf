@@ -1,94 +1,61 @@
 "use client";
 /* Belgeden doldur — tarayıcıda Tesseract.js OCR (tamamen yerel, görüntü sunucuya gitmez).
- * Fatura/belge görüntüsünden dönem, miktar ve belge no çıkarır; form ön-doldurma önerisi döner. */
+ * Profil tabanlı: enerji faturası, yakıt fişi, atık irsaliyesi, su faturası kalıpları
+ * lib/ocr-profiller.ts içinde tanımlıdır; panel seçilen profile göre alan çıkarır. */
 import { useRef, useState } from "react";
-import { CATEGORIES, MONTHS_TR } from "@/lib/constants";
+import { CATEGORIES } from "@/lib/constants";
+import { OCR_PROFILLER, profilBul, type OcrProfilKod, type OcrAlanlar } from "@/lib/ocr-profiller";
 
-export interface OcrOneri {
-  year?: number;
-  month?: number;
-  amount?: number;
-  documentRef?: string;
-  category?: string;
+export interface OcrOneri extends OcrAlanlar {
+  profil: OcrProfilKod;
   rawText: string;
 }
 
-const AY_ADLARI: Record<string, number> = {};
-MONTHS_TR.forEach((m, i) => { AY_ADLARI[m.toLocaleLowerCase("tr")] = i + 1; });
-
-/** OCR metninden alan çıkarımı — TR fatura kalıpları */
+/** Geriye dönük uyumluluk: varsayılan (fatura) profiliyle alan çıkarımı */
 export function metindenAlanlar(text: string): OcrOneri {
-  const t = text.replace(/\s+/g, " ");
-  const oneri: OcrOneri = { rawText: text };
-
-  // dönem: "Ocak 2026", "01/2026", "2026-01", "Dönem: 01.2026"
-  const ayYil = t.match(new RegExp(`(${MONTHS_TR.join("|")})\\s*[/ .-]?\\s*(20\\d{2})`, "i"));
-  if (ayYil) {
-    oneri.month = AY_ADLARI[ayYil[1].toLocaleLowerCase("tr")];
-    oneri.year = Number(ayYil[2]);
-  } else {
-    const sayisal = t.match(/\b(0?[1-9]|1[0-2])[/.\-](20\d{2})\b/) ?? t.match(/\b(20\d{2})[/.\-](0?[1-9]|1[0-2])\b/);
-    if (sayisal) {
-      const [a, b] = [sayisal[1], sayisal[2]];
-      if (a.startsWith("20")) { oneri.year = Number(a); oneri.month = Number(b); }
-      else { oneri.month = Number(a); oneri.year = Number(b); }
-    }
-  }
-
-  // miktar: birimden önce gelen sayı (kWh, m³/m3, lt/litre, ton, kg, Sm3)
-  const birimler = [
-    { re: /([\d.,]+)\s*k[wW]h/i, cat: "ELEKTRIK" },
-    { re: /([\d.,]+)\s*(?:Sm3|Sm³|m3|m³)/i, cat: "DOGALGAZ" },
-    { re: /([\d.,]+)\s*(?:lt|litre|L)\b/i, cat: "DIZEL" },
-    { re: /([\d.,]+)\s*ton\b/i, cat: "ATIK" },
-  ];
-  for (const b of birimler) {
-    const m = t.match(b.re);
-    if (m) {
-      const num = parseTrNumber(m[1]);
-      if (num !== null && num > 0) { oneri.amount = num; oneri.category = b.cat; break; }
-    }
-  }
-
-  // belge no: "Fatura No: X", "Belge No", "Seri No"
-  const belge = t.match(/(?:fatura|belge|seri)\s*no\s*[:.]?\s*([A-Z0-9-]{4,30})/i);
-  if (belge) oneri.documentRef = belge[1];
-
-  return oneri;
+  return { ...profilBul("fatura").cikar(text), profil: "fatura", rawText: text };
 }
 
-function parseTrNumber(s: string): number | null {
-  // "1.234,56" → 1234.56 ; "1234.56" → 1234.56
-  const cleaned = s.includes(",")
-    ? s.replace(/\./g, "").replace(",", ".")
-    : s;
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
+/** Tarayıcıda yerel OCR çalıştır — görüntü dosyası/blob → ham metin */
+export async function ocrTani(f: File | Blob, onProgress?: (p: number) => void): Promise<string> {
+  const { createWorker } = await import("tesseract.js");
+  const worker = await createWorker(["tur", "eng"], 1, {
+    workerPath: "/tesseract/worker.min.js",
+    corePath: "/tesseract/",
+    langPath: "/tessdata",
+    gzip: true,
+    logger: (m: { status?: string; progress?: number }) => {
+      if (m.status === "recognizing text" && typeof m.progress === "number") onProgress?.(m.progress);
+    },
+  });
+  try {
+    const { data } = await worker.recognize(f);
+    return data.text ?? "";
+  } finally {
+    await worker.terminate();
+  }
 }
 
-export function OcrPanel({ onOneri }: { onOneri: (o: OcrOneri) => void }) {
+export function OcrPanel({ onOneri, varsayilanProfil = "fatura", sabitProfil = false }: {
+  onOneri: (o: OcrOneri) => void;
+  /** başlangıç belge türü (fatura | yakit_fisi | irsaliye | su_faturasi) */
+  varsayilanProfil?: OcrProfilKod;
+  /** true ise kullanıcı belge türünü değiştiremez */
+  sabitProfil?: boolean;
+}) {
   const ref = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<"bos" | "calisiyor" | "hata">("bos");
   const [progress, setProgress] = useState(0);
   const [msg, setMsg] = useState<string | null>(null);
+  const [profil, setProfil] = useState<OcrProfilKod>(varsayilanProfil);
 
   async function onFile(f: File) {
     setState("calisiyor"); setProgress(0); setMsg(null);
     try {
-      const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker(["tur", "eng"], 1, {
-        workerPath: "/tesseract/worker.min.js",
-        corePath: "/tesseract/",
-        langPath: "/tessdata",
-        gzip: true,
-        logger: (m: { status?: string; progress?: number }) => {
-          if (m.status === "recognizing text" && typeof m.progress === "number") setProgress(m.progress);
-        },
-      });
-      const { data } = await worker.recognize(f);
-      await worker.terminate();
-      const oneri = metindenAlanlar(data.text ?? "");
-      if (!oneri.amount && !oneri.year && !oneri.documentRef) {
+      const text = await ocrTani(f, setProgress);
+      const alanlar = profilBul(profil).cikar(text);
+      const oneri: OcrOneri = { ...alanlar, profil, rawText: text };
+      if (!oneri.amount && !oneri.year && !oneri.documentRef && !oneri.plateNo) {
         setState("hata");
         setMsg("Belgeden alan çıkarılamadı — daha net bir görüntü deneyin.");
         return;
@@ -101,6 +68,8 @@ export function OcrPanel({ onOneri }: { onOneri: (o: OcrOneri) => void }) {
     }
   }
 
+  const seciliProfil = profilBul(profil);
+
   return (
     <div className="rounded-xl border border-dashed border-leaf-300/70 bg-leaf-50/50 px-3 py-2.5">
       {state === "calisiyor" ? (
@@ -111,12 +80,23 @@ export function OcrPanel({ onOneri }: { onOneri: (o: OcrOneri) => void }) {
       ) : (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-[11.5px] text-ink/55">
-            📄 fatura görüntüsünden otomatik doldur <span className="text-ink/35">(yerel OCR — dosya cihazınızdan çıkmaz)</span>
+            📄 belgeden otomatik doldur <span className="text-ink/35">({seciliProfil.ipucu} — dosya cihazınızdan çıkmaz)</span>
           </p>
-          <button type="button" onClick={() => ref.current?.click()}
-            className="cursor-pointer rounded-lg border border-leaf-300/80 bg-white/80 px-2.5 py-1 text-[11.5px] font-medium text-leaf-700 transition hover:bg-leaf-100">
-            belge seç
-          </button>
+          <span className="inline-flex items-center gap-1.5">
+            {!sabitProfil && (
+              <select
+                value={profil} onChange={(e) => setProfil(e.target.value as OcrProfilKod)}
+                aria-label="belge türü"
+                className="cursor-pointer rounded-lg border border-leaf-300/80 bg-white/80 px-1.5 py-1 text-[11px] text-ink/70 outline-none transition hover:border-leaf-400"
+              >
+                {OCR_PROFILLER.map((p) => <option key={p.kod} value={p.kod}>{p.etiket}</option>)}
+              </select>
+            )}
+            <button type="button" onClick={() => ref.current?.click()}
+              className="cursor-pointer rounded-lg border border-leaf-300/80 bg-white/80 px-2.5 py-1 text-[11.5px] font-medium text-leaf-700 transition hover:bg-leaf-100">
+              belge seç
+            </button>
+          </span>
         </div>
       )}
       {msg && <p className="mt-1.5 text-[11.5px] text-danger">{msg}</p>}

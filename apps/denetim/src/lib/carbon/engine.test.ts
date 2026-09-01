@@ -6,6 +6,7 @@ import {
   paybackYears, priorityScores, gesFeasibility, gesCoverageRatio, annualize,
   kwhEquivalent, savingsTargetProgress, detectAnomalies, qualityScore, fleetPriorityScore,
   atiksuDengesi, aritmaYogunlugu,
+  seasonalForecast, yilSonuTahmini, type AylikNokta,
   GES_KWH_PER_KWP_YIL, GES_CAPEX_TRY_PER_KWP, LED_TASARRUF_ORANI,
   type EmissionRow,
 } from "./engine";
@@ -369,5 +370,89 @@ describe("atıksu hesapları", () => {
     expect(aritmaYogunlugu(205, 1_000_000)).toBeCloseTo(0.205, 6);
     expect(aritmaYogunlugu(205, 0)).toBeNull();
     expect(aritmaYogunlugu(205, -5)).toBeNull();
+  });
+});
+
+describe("seasonalForecast", () => {
+  const duzSeri = (n: number, deger = 100): AylikNokta[] =>
+    Array.from({ length: n }, (_, i) => ({
+      year: 2024 + Math.floor(i / 12), month: (i % 12) + 1, tCO2e: deger,
+    }));
+
+  it("boş seri → boş tahmin", () => {
+    expect(seasonalForecast([], 12)).toEqual([]);
+    expect(seasonalForecast(duzSeri(12), 0)).toEqual([]);
+  });
+
+  it("düz seri → sabit tahmin, ay sarması doğru", () => {
+    const t = seasonalForecast(duzSeri(12), 3); // son nokta 2024-12
+    expect(t).toHaveLength(3);
+    expect(t[0]).toMatchObject({ year: 2025, month: 1 });
+    expect(t[2]).toMatchObject({ year: 2025, month: 3 });
+    t.forEach((p) => expect(p.tCO2e).toBeCloseTo(100, 4));
+  });
+
+  it("4'ten az nokta → ortalama düz uzatılır", () => {
+    const t = seasonalForecast([
+      { year: 2025, month: 1, tCO2e: 80 },
+      { year: 2025, month: 2, tCO2e: 120 },
+    ], 2);
+    expect(t[0].tCO2e).toBeCloseTo(100, 6);
+    expect(t[1]).toMatchObject({ year: 2025, month: 4 });
+  });
+
+  it("artan trend ileriye taşınır", () => {
+    const seri: AylikNokta[] = Array.from({ length: 12 }, (_, i) => ({
+      year: 2025, month: i + 1, tCO2e: 100 + i * 10, // 100 → 210
+    }));
+    const t = seasonalForecast(seri, 3);
+    expect(t[0].tCO2e).toBeGreaterThan(210);
+    expect(t[2].tCO2e).toBeGreaterThan(t[0].tCO2e);
+  });
+
+  it("mevsimsellik korunur: kış ayları yüksek", () => {
+    // 24 ay, kış (12,1,2) 150, yaz (6,7,8) 60, diğerleri 100 — trend düz
+    const deger = (m: number) => ([12, 1, 2].includes(m) ? 150 : [6, 7, 8].includes(m) ? 60 : 100);
+    const seri: AylikNokta[] = Array.from({ length: 24 }, (_, i) => ({
+      year: 2024 + Math.floor(i / 12), month: (i % 12) + 1, tCO2e: deger((i % 12) + 1),
+    }));
+    const t = seasonalForecast(seri, 12);
+    const ocak = t.find((p) => p.month === 1)!;
+    const temmuz = t.find((p) => p.month === 7)!;
+    expect(ocak.tCO2e).toBeGreaterThan(temmuz.tCO2e * 1.8);
+  });
+
+  it("negatif tahmin 0'da kırpılır", () => {
+    const seri: AylikNokta[] = Array.from({ length: 12 }, (_, i) => ({
+      year: 2025, month: i + 1, tCO2e: Math.max(0, 110 - i * 10), // sert düşüş
+    }));
+    const t = seasonalForecast(seri, 6);
+    t.forEach((p) => expect(p.tCO2e).toBeGreaterThanOrEqual(0));
+  });
+});
+
+describe("yilSonuTahmini", () => {
+  it("veri yoksa null", () => {
+    expect(yilSonuTahmini([], 2026)).toBeNull();
+  });
+
+  it("tam yıl → tahminKalan 0", () => {
+    const seri: AylikNokta[] = Array.from({ length: 12 }, (_, i) => ({ year: 2025, month: i + 1, tCO2e: 100 }));
+    const s = yilSonuTahmini(seri, 2025)!;
+    expect(s.tahminKalan).toBe(0);
+    expect(s.yilSonu).toBeCloseTo(1200, 6);
+    expect(s.gerceklesenAy).toBe(12);
+  });
+
+  it("yarım yıl → gerçekleşen + kalan tahmin", () => {
+    const seri: AylikNokta[] = [
+      ...Array.from({ length: 12 }, (_, i) => ({ year: 2025, month: i + 1, tCO2e: 100 })),
+      ...Array.from({ length: 6 }, (_, i) => ({ year: 2026, month: i + 1, tCO2e: 100 })),
+    ];
+    const s = yilSonuTahmini(seri, 2026)!;
+    expect(s.gerceklesen).toBeCloseTo(600, 6);
+    expect(s.gerceklesenAy).toBe(6);
+    expect(s.tahminKalan).toBeCloseTo(600, 0); // düz seri → ~100/ay × 6
+    expect(s.yilSonu).toBeCloseTo(1200, 0);
   });
 });

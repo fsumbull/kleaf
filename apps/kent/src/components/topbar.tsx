@@ -2,6 +2,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { ROLE_LABELS, type Role } from "@/lib/constants";
+import { BildirimZili } from "@/components/bildirim-zili";
 
 const YEARS = [2024, 2025, 2026];
 
@@ -91,6 +92,8 @@ export function Topbar({ orgName, product, year, userName, role, orgs, activeOrg
             <span className="block text-[10px] lowercase text-ink/45">{ROLE_LABELS[role]}</span>
           </span>
         </span>
+
+        <BildirimZili />
 
         <button
           type="button" title="parolamı değiştir" aria-label="parolamı değiştir" onClick={() => setPwOpen(true)}
